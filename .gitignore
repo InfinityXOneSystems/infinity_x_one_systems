@@ -90,7 +90,6 @@ target/
 *.cache
 
 # OS generated files
-.DS_Store
 Desktop.ini
 
 # Environment files (may contain secrets)
