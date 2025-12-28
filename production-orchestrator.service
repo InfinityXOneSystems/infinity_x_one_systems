@@ -1,0 +1,30 @@
+[Unit]
+Description=Infinity XOS Production Agent Orchestrator
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=ai
+Group=ai
+WorkingDirectory=/home/ai/repos/infinity-xos
+ExecStart=/home/ai/miniconda3/envs/infinity/bin/python production_orchestrator.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=production-orchestrator
+
+# Security settings
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/ai/repos
+ProtectHome=read-only
+
+# Resource limits
+MemoryLimit=2G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

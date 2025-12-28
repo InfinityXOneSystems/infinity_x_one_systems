@@ -1,0 +1,42 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  - job_name: 'production-orchestrator'
+    static_configs:
+      - targets: ['production-orchestrator:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+
+  - job_name: 'agent-communication'
+    static_configs:
+      - targets: ['agent-communication:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  - job_name: 'agent-intelligence'
+    static_configs:
+      - targets: ['agent-intelligence:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

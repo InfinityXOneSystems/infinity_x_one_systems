@@ -1,0 +1,48 @@
+FROM python:3.11-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js for crawler components
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
+    apt-get install -y nodejs
+
+# Create AI user
+RUN useradd -m -s /bin/bash ai
+
+# Set working directory
+WORKDIR /home/ai/repos/infinity-xos
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install additional production dependencies
+RUN pip install --no-cache-dir \
+    psutil \
+    prometheus_client \
+    redis \
+    rq
+
+# Copy application code
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /workspace && \
+    chown -R ai:ai /workspace /home/ai
+
+# Switch to AI user
+USER ai
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/status')" || exit 1
+
+# Expose port
+EXPOSE 8000
+
+# Start the orchestrator
+CMD ["python", "production_orchestrator.py"]

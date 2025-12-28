@@ -1,0 +1,201 @@
+version: '3.8'
+
+services:
+  production-orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    container_name: infinity-xos-orchestrator
+    volumes:
+      - ../:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WORKSPACE_ROOT=/workspace
+      - PYTHONPATH=/workspace/infinity-xos
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  infinity-crawler:
+    build:
+      context: ./systems/infinity-crawler
+      dockerfile: Dockerfile
+    container_name: infinity-crawler
+    volumes:
+      - ../:/workspace
+    environment:
+      - ORCHESTRATOR_URL=http://production-orchestrator:8000
+      - WORKSPACE_ROOT=/workspace
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+    depends_on:
+      - production-orchestrator
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  autonomous-crawler:
+    build:
+      context: ../autonomous_crawler
+      dockerfile: Dockerfile
+    container_name: autonomous-crawler
+    volumes:
+      - ../:/workspace
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - WORKSPACE_ROOT=/workspace
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+    depends_on:
+      - redis
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  background-agent:
+    build:
+      context: ../background_agent
+      dockerfile: Dockerfile
+    container_name: background-agent
+    volumes:
+      - ../:/workspace
+    environment:
+      - WORKSPACE_ROOT=/workspace
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  real-estate-intelligence:
+    build:
+      context: ../Real_Estate_Intelligence
+      dockerfile: Dockerfile
+    container_name: real-estate-intelligence
+    volumes:
+      - ../:/workspace
+    environment:
+      - WORKSPACE_ROOT=/workspace
+      - NODE_ENV=production
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  agent-communication:
+    build:
+      context: ../agent_communication
+      dockerfile: Dockerfile
+    container_name: agent-communication
+    ports:
+      - "8001:8000"
+    volumes:
+      - ../:/workspace
+    environment:
+      - WORKSPACE_ROOT=/workspace
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  agent-intelligence:
+    build:
+      context: ../agent_intelligence
+      dockerfile: Dockerfile
+    container_name: agent-intelligence
+    ports:
+      - "8002:8000"
+    volumes:
+      - ../:/workspace
+    environment:
+      - WORKSPACE_ROOT=/workspace
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: infinity-xos-redis
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Monitoring and logging
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: infinity-xos-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: infinity-xos-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - infinity-xos-network
+    restart: unless-stopped
+
+networks:
+  infinity-xos-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  grafana_data:
