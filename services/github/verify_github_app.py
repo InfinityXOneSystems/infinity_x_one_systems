@@ -103,15 +103,6 @@ def create_branch_and_pr(token: str, repo: str, branch: str, file_path: str) -> 
     return r.json()
 
 
-    logging.info("Created JWT. Exchanging for installation token...")
-    jwt_token = create_jwt(GITHUB_APP_ID, PRIVATE_KEY_PATH)
-    logging.info("Created JWT. Exchanging for installation token...")
-    token = create_installation_token(jwt_token, INSTALLATION_ID)
-    logging.info("Got installation token; creating branch & PR...")
-    pr = create_branch_and_pr(token, REPO, BRANCH_NAME, COMMIT_FILE_PATH)
-    logging.info("PR created:", pr.get("html_url"))
-
-
 if __name__ == "__main__":
     missing = []
     for k in ("GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH", "GITHUB_APP_INSTALLATION_ID"):
@@ -123,4 +114,6 @@ if __name__ == "__main__":
             "Set GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_INSTALLATION_ID, and optionally GITHUB_TEST_REPO",
         )
         raise SystemExit(1)
-    main()
+    jwt_token = create_jwt(GITHUB_APP_ID, PRIVATE_KEY_PATH)
+    token = create_installation_token(jwt_token, INSTALLATION_ID)
+    pr = create_branch_and_pr(token, REPO, BRANCH_NAME, COMMIT_FILE_PATH)

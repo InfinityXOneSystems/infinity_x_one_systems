@@ -28,7 +28,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional
 import subprocess
 import psutil
 import threading
@@ -58,12 +58,10 @@ class ProductionAgentOrchestrator:
         self.active_agents: Dict[str, Dict[str, Any]] = {}
         self.agent_processes: Dict[str, subprocess.Popen] = {}
         self.agent_threads: Dict[str, threading.Thread] = {}
-        self.task_queue = queue.Queue()
         self.executor = ThreadPoolExecutor(max_workers=20)
 
         # Health monitoring
         self.health_checks: Dict[str, Dict[str, Any]] = {}
-        self.last_health_check = datetime.now()
 
         # Autonomous scheduling
         self.scheduled_tasks: List[Dict[str, Any]] = []
@@ -258,413 +256,143 @@ class ProductionAgentOrchestrator:
             processes = []
 
             for i in range(workers):
-                worker_id = f"{agent_id}-worker-{i+1}" if workers > 1 else agent_id
+                process = subprocess.Popen(
+                    agent_config["command"],
+                    cwd=cwd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                processes.append(process)
+                logger.info(f"Agent {agent_id} worker {i+1} started with PID: {process.pid}")
 
-                # Start process
-                if agent_config.get("background", True):
-                    process = subprocess.Popen(
-                        agent_config["command"],
-                        cwd=cwd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-                    )
-                    processes.append(process)
-                    self.agent_processes[worker_id] = process
-                    logger.info(f"Started background process for {worker_id} (PID: {process.pid})")
-                else:
-                    # Start in thread
-                    thread = threading.Thread(
-                        target=self._run_agent_thread,
-                        args=(worker_id, agent_config, cwd),
-                        daemon=True
-                    )
-                    thread.start()
-                    self.agent_threads[worker_id] = thread
-                    logger.info(f"Started thread for {worker_id}")
-
-            # Update active agents
-            self.active_agents[agent_id] = {
-                "config": agent_config,
-                "started_at": datetime.now(),
-                "workers": workers,
-                "processes": processes if processes else None,
-                "status": "running"
-            }
-
+            self.agent_processes[agent_id] = processes
+            self.active_agents[agent_id] = agent_config
             return True
-
         except Exception as e:
-            logger.error(f"Failed to start agent {agent_id}: {e}")
+            logger.error(f"Error starting agent {agent_id}: {e}")
             return False
-
-    def _run_agent_thread(self, agent_id: str, config: Dict[str, Any], cwd: str):
-        """Run agent in a thread"""
-        try:
-            while self.running and not self.shutdown_event.is_set():
-                # Agent logic here - for now just sleep
-                time.sleep(1)
-        except Exception as e:
-            logger.error(f"Agent thread {agent_id} error: {e}")
 
     async def stop_agent(self, agent_id: str) -> bool:
-        """Stop an agent"""
-        try:
-            logger.info(f"Stopping agent: {agent_id}")
-
-            # Stop processes
-            if agent_id in self.active_agents:
-                agent_info = self.active_agents[agent_id]
-                processes = agent_info.get("processes", [])
-
-                for process in processes:
-                    if process and process.poll() is None:
-                        process.terminate()
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
-
-                # Clean up
-                self.active_agents.pop(agent_id, None)
-
-            # Stop threads
-            for worker_id, thread in list(self.agent_threads.items()):
-                if worker_id.startswith(f"{agent_id}-"):
-                    # Thread will stop when self.running becomes False
-                    pass
-
-            logger.info(f"Stopped agent: {agent_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to stop agent {agent_id}: {e}")
-            return False
-
-    async def health_check_agent(self, agent_id: str, agent_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform health check on an agent"""
-        health_status = {
-            "agent_id": agent_id,
-            "timestamp": datetime.now(),
-            "status": "unknown",
-            "details": {}
-        }
-
-        try:
-            # Check if agent is in active agents
-            if agent_id not in self.active_agents:
-                health_status["status"] = "stopped"
-                return health_status
-
-            agent_info = self.active_agents[agent_id]
-            processes = agent_info.get("processes", [])
-
-            if processes:
-                # Check process health
-                all_alive = True
-                pids = []
-
-                for process in processes:
-                    if process.poll() is not None:
-                        all_alive = False
-                    else:
-                        pids.append(process.pid)
-
-                health_status["status"] = "healthy" if all_alive else "unhealthy"
-                health_status["details"] = {
-                    "pids": pids,
-                    "alive_count": sum(1 for p in processes if p.poll() is None),
-                    "total_count": len(processes)
-                }
-            else:
-                # Thread-based agent - assume healthy if running
-                health_status["status"] = "healthy"
-                health_status["details"] = {"type": "thread"}
-
-        except Exception as e:
-            logger.error(f"Health check failed for {agent_id}: {e}")
-            health_status["status"] = "error"
-            health_status["details"] = {"error": str(e)}
-
-        self.health_checks[agent_id] = health_status
-        return health_status
-
-    async def monitor_agents(self):
-        """Monitor all agents and restart failed ones"""
-        while self.running:
-            try:
-                current_time = datetime.now()
-
-                # Health check all active agents
-                for agent_id, agent_config in list(self.active_agents.items()):
-                    last_check = self.health_checks.get(agent_id, {}).get("timestamp", datetime.min)
-                    interval = agent_config["config"].get("health_check_interval", 60)
-
-                    if (current_time - last_check).seconds >= interval:
-                        health = await self.health_check_agent(agent_id, agent_config["config"])
-
-                        if health["status"] == "unhealthy" and agent_config["config"].get("restart_on_failure", False):
-                            logger.warning(f"Agent {agent_id} unhealthy, restarting...")
-                            await self.stop_agent(agent_id)
-                            await asyncio.sleep(2)  # Wait before restart
-                            await self.start_agent(agent_id, agent_config["config"])
-
-                # Check for scheduled tasks
-                await self._process_scheduled_tasks()
-
-                await asyncio.sleep(10)  # Check every 10 seconds
-
-            except Exception as e:
-                logger.error(f"Monitor error: {e}")
-                await asyncio.sleep(10)
-
-    async def _process_scheduled_tasks(self):
-        """Process autonomous scheduled tasks"""
-        current_time = datetime.now()
-
-        for task in self.scheduled_tasks:
-            if task.get("next_run", datetime.max) <= current_time:
+        """Stop a running agent"""
+        if agent_id in self.agent_processes:
+            for process in self.agent_processes[agent_id]:
                 try:
-                    # Execute scheduled task
-                    await self._execute_scheduled_task(task)
-
-                    # Schedule next run
-                    interval = task.get("interval_minutes", 60)
-                    task["next_run"] = current_time + timedelta(minutes=interval)
-
+                    process.terminate()
+                    process.wait(timeout=5)
+                    logger.info(f"Agent {agent_id} (PID: {process.pid}) stopped.")
+                except psutil.NoSuchProcess:
+                    logger.warning(f"Agent {agent_id} (PID: {process.pid}) already terminated.")
                 except Exception as e:
-                    logger.error(f"Scheduled task failed: {e}")
+                    logger.error(f"Error stopping agent {agent_id} (PID: {process.pid}): {e}")
+            del self.agent_processes[agent_id]
+            del self.active_agents[agent_id]
+            return True
+        logger.warning(f"Agent {agent_id} not found or not running.")
+        return False
 
-    async def _execute_scheduled_task(self, task: Dict[str, Any]):
-        """Execute a scheduled task"""
-        task_type = task.get("type")
+    async def restart_agent(self, agent_id: str) -> bool:
+        """Restart an agent"""
+        logger.info(f"Restarting agent: {agent_id}")
+        if await self.stop_agent(agent_id):
+            return await self.start_agent(agent_id, self.active_agents[agent_id])
+        return False
 
-        if task_type == "maintenance":
-            # Run maintenance on all repos
-            await self.run_maintenance_cycle()
-        elif task_type == "health_report":
-            # Generate health report
-            await self.generate_health_report()
-        elif task_type == "data_sync":
-            # Sync data with /results system
-            await self.sync_with_results_system()
+    async def health_check(self, agent_id: str) -> Dict[str, Any]:
+        """Perform health check for an agent"""
+        if agent_id not in self.active_agents:
+            return {"status": "unknown", "message": "Agent not found"}
 
-    async def run_maintenance_cycle(self):
-        """Run maintenance cycle on all repositories"""
-        logger.info("Running maintenance cycle")
+        processes = self.agent_processes[agent_id]
+        all_healthy = True
+        for process in processes:
+            if process.poll() is not None:  # Agent process has terminated
+                all_healthy = False
+                break
 
-        # This would integrate with the maintenance agent
-        # For now, just log
-        maintenance_results = {
-            "timestamp": datetime.now(),
-            "repos_checked": len(list(self.workspace_root.glob("*"))),
-            "status": "completed"
-        }
+        if all_healthy:
+            self.health_checks[agent_id] = {"status": "healthy", "timestamp": datetime.now()}
+            return {"status": "healthy", "timestamp": datetime.now()}
+        else:
+            logger.warning(f"Agent {agent_id} is unhealthy. Attempting restart.")
+            if self.active_agents[agent_id].get("restart_on_failure", False):
+                if await self.restart_agent(agent_id):
+                    return {"status": "restarted", "timestamp": datetime.now()}
+            self.health_checks[agent_id] = {"status": "unhealthy", "timestamp": datetime.now()}
+            return {"status": "unhealthy", "message": "Agent process terminated"}
 
-        # Save to results system
-        await self.save_to_results_system("maintenance", maintenance_results)
+    async def run_scheduler(self):
+        """Run scheduled tasks"""
+        while self.running:
+            now = datetime.now()
+            for task in self.scheduled_tasks:
+                if now >= task["next_run_time"]:
+                    logger.info(f"Executing scheduled task: {task['name']}")
+                    # Execute task logic here
+                    task["next_run_time"] += timedelta(minutes=task["interval_minutes"])
+            await asyncio.sleep(60)  # Check every minute
 
-    async def generate_health_report(self):
-        """Generate comprehensive health report"""
-        logger.info("Generating health report")
+    async def run_health_checks(self):
+        """Periodically run health checks for all active agents"""
+        while self.running:
+            for agent_id in list(self.active_agents.keys()):
+                await self.health_check(agent_id)
+            await asyncio.sleep(30)  # Check every 30 seconds
 
-        report = {
-            "timestamp": datetime.now(),
-            "active_agents": len(self.active_agents),
-            "total_processes": len(self.agent_processes),
-            "total_threads": len(self.agent_threads),
-            "health_status": self.health_checks.copy(),
-            "system_resources": self._get_system_resources()
-        }
-
-        # Save to results system
-        await self.save_to_results_system("health_report", report)
-
-    async def sync_with_results_system(self):
-        """Sync agent data with /results system"""
-        logger.info("Syncing with results system")
-
-        # Collect agent metrics
-        metrics = {
-            "timestamp": datetime.now(),
-            "agents": list(self.active_agents.keys()),
-            "processes": len(self.agent_processes),
-            "threads": len(self.agent_threads),
-            "health_checks": len(self.health_checks)
-        }
-
-        await self.save_to_results_system("agent_metrics", metrics)
-
-    def _get_system_resources(self) -> Dict[str, Any]:
-        """Get system resource usage"""
-        try:
-            return {
-                "cpu_percent": psutil.cpu_percent(),
-                "memory_percent": psutil.virtual_memory().percent,
-                "disk_usage": psutil.disk_usage('/').percent
-            }
-        except:
-            return {"error": "psutil not available"}
-
-    async def save_to_results_system(self, data_type: str, data: Dict[str, Any]):
-        """Save data to the /results system"""
-        try:
-            # Ensure results directory exists
-            compiled_dir = self.results_dir / "compiled"
-            compiled_dir.mkdir(parents=True, exist_ok=True)
-
-            # Create timestamped file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"production_{data_type}_{timestamp}.json"
-            filepath = compiled_dir / filename
-
-            # Save data
-            with open(filepath, 'w') as f:
-                json.dump(data, f, indent=2, default=str)
-
-            # Update manifest
-            await self._update_results_manifest(filepath, data_type)
-
-            logger.info(f"Saved {data_type} data to results system: {filepath}")
-
-        except Exception as e:
-            logger.error(f"Failed to save to results system: {e}")
-
-    async def _update_results_manifest(self, filepath: Path, data_type: str):
-        """Update the results manifest"""
-        try:
-            manifest_path = self.results_dir / "compiled_manifest.json"
-
-            if manifest_path.exists():
-                with open(manifest_path, 'r') as f:
-                    manifest = json.load(f)
-            else:
-                manifest = []
-
-            entry = {
-                "source": f"production_orchestrator://{data_type}",
-                "compiled": str(filepath),
-                "size": filepath.stat().st_size,
-                "timestamp": datetime.now().isoformat()
-            }
-
-            manifest.append(entry)
-
-            with open(manifest_path, 'w') as f:
-                json.dump(manifest, f, indent=2)
-
-        except Exception as e:
-            logger.error(f"Failed to update manifest: {e}")
-
-    async def start_all_agents(self):
-        """Start all discovered agents"""
-        logger.info("Starting all agents...")
-
+    async def start(self):
+        """Start the orchestrator and all agents"""
+        logger.info("Starting orchestrator...")
         agents = self.discover_agents()
-
         for agent_id, agent_config in agents.items():
-            if agent_config.get("autonomous", False):
-                await self.start_agent(agent_id, agent_config)
+            await self.start_agent(agent_id, agent_config)
 
-        # Start monitoring
-        self.monitor_task = asyncio.create_task(self.monitor_agents())
+        # Start scheduler and health check threads
+        self.scheduler_thread = threading.Thread(target=lambda: asyncio.run(self.run_scheduler()))
+        self.scheduler_thread.start()
 
-        # Start scheduler
-        self._start_scheduler()
+        self.health_check_thread = threading.Thread(target=lambda: asyncio.run(self.run_health_checks()))
+        self.health_check_thread.start()
 
-        logger.info(f"Started {len(self.active_agents)} agents")
+        logger.info("Orchestrator started.")
 
-    async def stop_all_agents(self):
-        """Stop all agents"""
-        logger.info("Stopping all agents...")
-
+    async def stop(self):
+        """Stop the orchestrator and all agents"""
+        logger.info("Stopping orchestrator...")
         self.running = False
         self.shutdown_event.set()
 
-        # Stop monitoring
-        if hasattr(self, 'monitor_task'):
-            self.monitor_task.cancel()
-
-        # Stop scheduler
-        if self.scheduler_thread:
-            self.scheduler_thread.join(timeout=5)
-
-        # Stop all agents
         for agent_id in list(self.active_agents.keys()):
             await self.stop_agent(agent_id)
 
-        # Shutdown executor
+        if self.scheduler_thread:
+            self.scheduler_thread.join()
+        if self.health_check_thread:
+            self.health_check_thread.join()
+
         self.executor.shutdown(wait=True)
+        logger.info("Orchestrator stopped.")
 
-        logger.info("All agents stopped")
+    def handle_signal(self, signum, frame):
+        logger.info(f"Received signal {signum}. Shutting down...")
+        asyncio.run(self.stop())
+        sys.exit(0)
 
-    def _start_scheduler(self):
-        """Start the autonomous scheduler"""
-        self.scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
-        self.scheduler_thread.start()
+    def run(self):
+        """Run the orchestrator in a blocking manner"""
+        signal.signal(signal.SIGINT, self.handle_signal)
+        signal.signal(signal.SIGTERM, self.handle_signal)
 
-    def _scheduler_loop(self):
-        """Scheduler loop for autonomous tasks"""
-        while self.running and not self.shutdown_event.is_set():
-            try:
-                # Schedule maintenance every 6 hours
-                if not any(t["type"] == "maintenance" for t in self.scheduled_tasks):
-                    self.scheduled_tasks.append({
-                        "type": "maintenance",
-                        "interval_minutes": 360,  # 6 hours
-                        "next_run": datetime.now() + timedelta(minutes=60)
-                    })
-
-                # Schedule health reports every hour
-                if not any(t["type"] == "health_report" for t in self.scheduled_tasks):
-                    self.scheduled_tasks.append({
-                        "type": "health_report",
-                        "interval_minutes": 60,
-                        "next_run": datetime.now() + timedelta(minutes=10)
-                    })
-
-                # Schedule data sync every 30 minutes
-                if not any(t["type"] == "data_sync" for t in self.scheduled_tasks):
-                    self.scheduled_tasks.append({
-                        "type": "data_sync",
-                        "interval_minutes": 30,
-                        "next_run": datetime.now() + timedelta(minutes=5)
-                    })
-
-                time.sleep(60)  # Check every minute
-
-            except Exception as e:
-                logger.error(f"Scheduler error: {e}")
-                time.sleep(60)
-
-    def run_forever(self):
-        """Run the orchestrator forever"""
-        async def main():
-            # Setup signal handlers
-            def signal_handler(signum, frame):
-                logger.info(f"Received signal {signum}, shutting down...")
-                asyncio.create_task(self.stop_all_agents())
-
-            signal.signal(signal.SIGINT, signal_handler)
-            signal.signal(signal.SIGTERM, signal_handler)
-
-            try:
-                # Start all agents
-                await self.start_all_agents()
-
-                # Keep running
-                while self.running:
-                    await asyncio.sleep(1)
-
-            except KeyboardInterrupt:
-                logger.info("Keyboard interrupt received")
-            finally:
-                await self.stop_all_agents()
-
-        # Run the async main function
-        asyncio.run(main())
+        loop = asyncio.get_event_loop()
+        try:
+            loop.run_until_complete(self.start())
+            self.shutdown_event.wait()  # Block until shutdown event is set
+        except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt received. Shutting down...")
+        finally:
+            loop.run_until_complete(self.stop())
+            loop.close()
 
 
 if __name__ == "__main__":
     orchestrator = ProductionAgentOrchestrator()
-    orchestrator.run_forever()
+    orchestrator.run()

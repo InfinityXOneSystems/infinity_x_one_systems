@@ -1,0 +1,6 @@
+{
+	"dependencies": {
+		"eslint": "^9.39.2",
+		"depcheck": "^1.4.7"
+	}
+}

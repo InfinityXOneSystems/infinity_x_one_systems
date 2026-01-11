@@ -14,7 +14,6 @@ app = FastAPI()
 LEDGER = []
 JOBS = []
 RESULTS = []
-RUNS = {}
 STATE = {}
 
 
@@ -23,9 +22,9 @@ def now():
 
 
 def log(event: str, meta: Optional[Dict[str, Any]] = None):
-    logging.info(entry, flush=True)
+    entry = {"event": event, "timestamp": now(), "meta": meta}
+    logging.info(json.dumps(entry), flush=True)
     LEDGER.append(entry)
-    logging.info(entry, flush=True)
 
 
 def inventory() -> Dict[str, Any]:
